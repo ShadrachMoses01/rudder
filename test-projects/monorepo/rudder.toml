@@ -1,0 +1,10 @@
+[[service]]
+name = "Frontend"
+cmd = "npm run dev"
+dir = "frontend"
+url = "http://localhost:5173"
+
+[[service]]
+name = "Backend"
+cmd = "node server.js"
+dir = "backend"

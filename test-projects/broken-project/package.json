@@ -1,0 +1,7 @@
+{
+  "name": "broken-project",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "echo building"
+  }
+}
