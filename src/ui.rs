@@ -11,6 +11,7 @@ fn status_style(status: &Status) -> Style {
     match status {
         Status::Running => Style::default().fg(Color::Green),
         Status::Starting => Style::default().fg(Color::Yellow),
+        Status::Stopping => Style::default().fg(Color::Yellow),
         Status::Stopped => Style::default().fg(Color::DarkGray),
         Status::Failed(_) => Style::default().fg(Color::Red),
     }
@@ -20,6 +21,7 @@ fn status_dot(status: &Status) -> &str {
     match status {
         Status::Running => "✓",
         Status::Starting => "◐",
+        Status::Stopping => "↓",
         Status::Stopped => "○",
         Status::Failed(_) => "✕",
     }
@@ -96,28 +98,33 @@ fn render_services(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let areas = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(area);
 
-    let items: Vec<ListItem> = app
-        .services
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let dot = status_dot(&s.status);
-            let label = match &s.url {
-                Some(u) => format!(" {}  {}  →  {}", dot, s.name, u),
-                None => format!(" {}  {}", dot, s.name),
-            };
-            let item = ListItem::new(label).style(status_style(&s.status));
-            if focused && i == app.service_selected {
-                item.style(
-                    status_style(&s.status)
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                item
-            }
-        })
-        .collect();
+    let items: Vec<ListItem> = if app.services.is_empty() {
+        vec![ListItem::new(" No services detected.").style(
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else {
+        app.services
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let dot = status_dot(&s.status);
+                let label = match &s.url {
+                    Some(u) => format!(" {}  {}  →  {}", dot, s.name, u),
+                    None => format!(" {}  {}", dot, s.name),
+                };
+                let item = ListItem::new(label).style(status_style(&s.status));
+                if focused && i == app.service_selected {
+                    item.style(
+                        status_style(&s.status)
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    item
+                }
+            })
+            .collect()
+    };
 
     let title = if focused { " Services ▌" } else { " Services " };
     let mut block = Block::default().borders(Borders::ALL).title(title);
@@ -166,7 +173,13 @@ fn render_command_area(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let content = match app.mode {
         Mode::Command => format!(":{}", app.command),
-        Mode::Normal => format!(":start / :stop / :cd  —  {}", project),
+        Mode::Normal => {
+            if app.services.is_empty() {
+                format!(":init —  generate config for  {}", project)
+            } else {
+                format!(":start / :stop / :cd  —  {}", project)
+            }
+        }
     };
 
     let block = Block::default().borders(Borders::ALL);

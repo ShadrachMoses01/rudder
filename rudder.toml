@@ -1,0 +1,4 @@
+[[service]]
+name = "Dev"
+cmd = "cargo run"
+

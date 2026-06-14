@@ -8,7 +8,31 @@ mod service;
 mod ui;
 
 use app::App;
+use clap::{Parser, Subcommand};
 use input::Action;
+
+#[derive(Parser)]
+#[command(name = "rudder", about = "Manage development services")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Generate a rudder.toml config from detected services
+    Init {
+        /// Print to stdout instead of writing rudder.toml
+        #[arg(long)]
+        stdout: bool,
+    },
+    /// Start all services (foreground; Ctrl+C to stop)
+    Up,
+    /// Stop all services started by `rudder up`
+    Down,
+    /// List detected services
+    Services,
+}
 
 fn setup_panic_hook() {
     let log_dir = dirs_or_home();
@@ -46,8 +70,163 @@ fn super_basic_time() -> String {
     format!("{:02}:{:02}:{:02}", h, m, s)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    setup_panic_hook();
+fn generate_config_toml(services: &[service::Service]) -> String {
+    let mut out = String::new();
+    for s in services {
+        out.push_str("[[service]]\n");
+        out.push_str(&format!("name = {:?}\n", s.name));
+        out.push_str(&format!("cmd = {:?}\n", s.cmd_string()));
+        if let Some(ref dir) = s.dir {
+            out.push_str(&format!("dir = {:?}\n", dir));
+        }
+        if let Some(ref url) = s.url {
+            out.push_str(&format!("url = {:?}\n", url));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn cmd_init(stdout: bool) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let services = detect::detect_services_for_init(&cwd);
+
+    if services.is_empty() {
+        eprintln!("No services detected in {}", cwd.display());
+        std::process::exit(1);
+    }
+
+    let toml = generate_config_toml(&services);
+
+    if stdout {
+        print!("{}", toml);
+    } else {
+        let path = cwd.join("rudder.toml");
+        match std::fs::write(&path, &toml) {
+            Ok(_) => {
+                println!("Config written to {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("Failed to write config: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn cmd_up() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut services = detect::detect_services_for(&cwd);
+
+    if services.is_empty() {
+        eprintln!("No services detected. Run `rudder init` to generate a config.");
+        std::process::exit(1);
+    }
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::Relaxed);
+    })
+    .expect("Failed to set Ctrl+C handler");
+
+    // Clear stale PIDs before starting
+    service::clear_pids(&cwd);
+
+    for s in &mut services {
+        println!("Starting {}...", s.name);
+        s.start(&cwd);
+        if let Some(pid) = s.child_pid() {
+            service::write_pid(&cwd, &s.name, pid);
+            println!("  {} started (pid {})", s.name, pid);
+        }
+    }
+
+    while running.load(std::sync::atomic::Ordering::Relaxed) {
+        for s in &mut services {
+            s.refresh();
+        }
+        // Exit when all services have stopped (e.g., killed externally or crashed)
+        let any_alive = services
+            .iter()
+            .any(|s| s.status == service::Status::Running
+                || s.status == service::Status::Starting
+                || s.status == service::Status::Stopping);
+        if !any_alive {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    // Wait for background stop to finish, then final cleanup
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for s in &mut services {
+        s.refresh();
+    }
+
+    for s in &mut services {
+        s.stop();
+    }
+    service::clear_pids(&cwd);
+}
+
+fn cmd_down() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let pids = service::read_pids(&cwd);
+
+    if pids.is_empty() {
+        println!("No running services found.");
+        return;
+    }
+
+    let mut stale = 0;
+    let mut stopped = 0;
+
+    for (name, pgid) in &pids {
+        print!("Stopping {}... ", name);
+        if service::kill_process_group(*pgid) {
+            println!("done");
+            stopped += 1;
+        } else {
+            println!("already stopped (stale PID file)");
+            stale += 1;
+        }
+    }
+
+    service::clear_pids(&cwd);
+
+    if stale > 0 {
+        println!("Cleaned up {} stale PID entr{}", stale, if stale == 1 { "y" } else { "ies" });
+    }
+    if stopped > 0 {
+        println!("Stopped {} service{}", stopped, if stopped == 1 { "" } else { "s" });
+    }
+}
+
+fn cmd_services() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let services = detect::detect_services_for(&cwd);
+
+    if services.is_empty() {
+        println!("No services detected. Run `rudder init` to generate a config.");
+        return;
+    }
+
+    println!("Services in {}:\n", cwd.display());
+    for s in &services {
+        let cmd = s.cmd_string();
+        let dir = s.dir.as_deref().unwrap_or(".");
+        match s.status {
+            service::Status::Running => println!("  ✓  {}  (running: {})", s.name, cmd),
+            service::Status::Stopped => println!("  ○  {}  ({})  [{}]", s.name, cmd, dir),
+            service::Status::Starting => println!("  ◐  {}  (starting)", s.name),
+            service::Status::Stopping => println!("  ↓  {}  (stopping: {})", s.name, cmd),
+            service::Status::Failed(ref e) => println!("  ✕  {}  (failed: {})", s.name, e),
+        }
+    }
+}
+
+fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
     let mut app = App::new();
 
@@ -98,5 +277,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ratatui::restore();
     app.log("[sys] Session ended");
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    setup_panic_hook();
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Init { stdout }) => {
+            cmd_init(stdout);
+        }
+        Some(Commands::Up) => {
+            cmd_up();
+        }
+        Some(Commands::Down) => {
+            cmd_down();
+        }
+        Some(Commands::Services) => {
+            cmd_services();
+        }
+        None => {
+            run_tui()?;
+        }
+    }
+
     Ok(())
 }

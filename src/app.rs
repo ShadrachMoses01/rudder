@@ -150,6 +150,7 @@ impl App {
                         let s = self.services.get(self.service_selected);
                         match s {
                             Some(s) if s.status == Status::Running || s.status == Status::Starting => Some("stop"),
+                            Some(s) if s.status == Status::Stopping => None,
                             Some(_) => Some("start"),
                             None => None,
                         }
@@ -157,8 +158,8 @@ impl App {
                     match action {
                         Some("stop") => {
                             let name = self.services[self.service_selected].name.clone();
-                            self.services[self.service_selected].stop();
-                            self.log(&format!("[sys] Stopped service: {}", name));
+                            self.services[self.service_selected].stop_background();
+                            self.log(&format!("[sys] Stopping service: {}", name));
                         }
                         Some("start") => {
                             let name = self.services[self.service_selected].name.clone();
@@ -257,6 +258,26 @@ impl App {
             .spawn();
     }
 
+    pub fn restore_or_detect(&mut self) {
+        let fresh = detect::detect_services_for(&self.browser.current_dir);
+        self.services = match self.service_cache.remove(&self.browser.current_dir) {
+            Some(cached) => fresh
+                .into_iter()
+                .map(|mut s| {
+                    if let Some((status, log)) = cached.get(&s.name) {
+                        let st = status.clone();
+                        s.status = st;
+                        if let Ok(mut l) = s.log.lock() {
+                            *l = log.clone();
+                        }
+                    }
+                    s
+                })
+                .collect(),
+            None => fresh,
+        };
+    }
+
     pub fn refresh_services(&mut self) {
         let mut events: Vec<(String, Status)> = Vec::new();
         for service in &mut self.services {
@@ -271,7 +292,8 @@ impl App {
                 Status::Running => self.log(&format!("[sys] Running: {}", name)),
                 Status::Stopped => self.log(&format!("[sys] Stopped: {}", name)),
                 Status::Failed(e) => self.log(&format!("[err] {} exited ({})", name, e)),
-                Status::Starting => {}
+                Status::Starting => {},
+                Status::Stopping => self.log(&format!("[sys] Stopping: {}", name)),
             }
         }
     }

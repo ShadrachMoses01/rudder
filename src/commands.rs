@@ -34,14 +34,14 @@ fn do_stop(app: &mut App, name: Option<&str>) {
         Some("all") => {
             app.log("[sys] Stopping all services");
             for s in &mut app.services {
-                s.stop();
+                s.stop_background();
             }
         }
         Some(n) => {
             if app.services.iter().any(|s| s.name == n) {
                 app.log(&format!("[sys] Stopping service: {}", n));
                 if let Some(s) = app.services.iter_mut().find(|s| s.name == n) {
-                    s.stop();
+                    s.stop_background();
                 }
             }
         }
@@ -50,7 +50,7 @@ fn do_stop(app: &mut App, name: Option<&str>) {
             if let Some(ref name) = sname {
                 app.log(&format!("[sys] Stopping service: {}", name));
                 if let Some(s) = app.services.get_mut(app.service_selected) {
-                    s.stop();
+                    s.stop_background();
                 }
             }
         }
@@ -114,6 +114,43 @@ pub fn execute(app: &mut App, input: &str) {
         Some(&"start") => do_start(app, parts.get(1).copied()),
         Some(&"stop") => do_stop(app, parts.get(1).copied()),
         Some(&"restart") => do_restart(app, parts.get(1).copied()),
+
+        Some(&"init") => {
+            let cwd = app.browser.current_dir.clone();
+            let services = crate::detect::detect_services_for_init(&cwd);
+            if services.is_empty() {
+                app.log("[sys] No services detected; nothing to init");
+                return;
+            }
+            let path = cwd.join("rudder.toml");
+            let mut out = String::new();
+            for s in &services {
+                out.push_str("[[service]]\n");
+                out.push_str(&format!("name = {:?}\n", s.name));
+                out.push_str(&format!("cmd = {:?}\n", s.cmd_string()));
+                if let Some(ref dir) = s.dir {
+                    out.push_str(&format!("dir = {:?}\n", dir));
+                }
+                if let Some(ref url) = s.url {
+                    out.push_str(&format!("url = {:?}\n", url));
+                }
+                out.push('\n');
+            }
+            match std::fs::write(&path, &out) {
+                Ok(_) => {
+                    app.log(&format!("[sys] Config written to {}", path.display()));
+                    // Reload services from config
+                    for s in &mut app.services {
+                        s.stop();
+                    }
+                    app.restore_or_detect();
+                    app.service_selected = 0;
+                }
+                Err(e) => {
+                    app.log(&format!("[err] Failed to write config: {}", e));
+                }
+            }
+        }
 
         Some(&"export-log") | Some(&"L") => {
             let dest = std::path::Path::new("rudder-session.log");
