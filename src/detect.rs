@@ -1,4 +1,5 @@
 use crate::service::Service;
+use std::collections::HashMap;
 use std::path::Path;
 
 fn has(base: &Path, name: &str) -> bool {
@@ -36,26 +37,52 @@ fn package_manager(base: &Path) -> &'static str {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct PackageJson {
+    scripts: Option<HashMap<String, String>>,
+    dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "devDependencies")]
+    dev_dependencies: Option<HashMap<String, String>>,
+}
+
+fn has_dep(pkg: &PackageJson, name: &str) -> bool {
+    pkg.dependencies
+        .as_ref()
+        .map_or(false, |d| d.contains_key(name))
+        || pkg
+            .dev_dependencies
+            .as_ref()
+            .map_or(false, |d| d.contains_key(name))
+}
+
 fn detect_primary(base: &Path) -> Option<Service> {
     if has(base, "package.json") {
         if let Some(content) = read_to_string(base, "package.json") {
+            let pkg: PackageJson = match serde_json::from_str(&content) {
+                Ok(p) => p,
+                Err(_) => return None,
+            };
             let pm = package_manager(base);
-            let has_script = |name: &str| content.contains(&format!("\"{}\"", name));
+            let has_script = |name: &str| -> bool {
+                pkg.scripts
+                    .as_ref()
+                    .map_or(false, |s| s.contains_key(name))
+            };
 
             if has_script("dev") || has_script("develop") {
-                let cmd = if content.contains("\"next\"") {
+                let cmd = if has_dep(&pkg, "next") {
                     format!("{} run dev", pm)
-                } else if content.contains("\"vite\"") {
+                } else if has_dep(&pkg, "vite") {
                     format!("{} run dev", pm)
-                } else if content.contains("\"react-scripts\"") {
+                } else if has_dep(&pkg, "react-scripts") {
                     format!("{} start", pm)
-                } else if content.contains("\"vue\"") || content.contains("\"@vue\"") {
+                } else if has_dep(&pkg, "vue") || has_dep(&pkg, "@vue/cli-service") {
                     format!("{} run dev", pm)
-                } else if content.contains("\"@angular\"") || content.contains("\"angular\"") {
+                } else if has_dep(&pkg, "@angular/core") || has_dep(&pkg, "angular") {
                     "ng serve".to_string()
-                } else if content.contains("\"svelte\"") || content.contains("\"@svelte\"") {
+                } else if has_dep(&pkg, "svelte") || has_dep(&pkg, "@sveltejs/kit") {
                     format!("{} run dev", pm)
-                } else if content.contains("\"nuxt\"") {
+                } else if has_dep(&pkg, "nuxt") {
                     format!("{} run dev", pm)
                 } else {
                     format!("{} run dev", pm)
@@ -338,37 +365,6 @@ fn read_config(base: &Path) -> Vec<Service> {
         .collect()
 }
 
-fn has_any_project_file(base: &Path) -> bool {
-    has(base, "package.json")
-        || has(base, "Cargo.toml")
-        || has(base, "go.mod")
-        || has(base, "pom.xml")
-        || has(base, "build.gradle")
-        || has(base, "build.gradle.kts")
-        || has(base, "manage.py")
-        || has(base, "pyproject.toml")
-        || has(base, "requirements.txt")
-        || has(base, "Gemfile")
-        || has(base, "mix.exs")
-        || has(base, "composer.json")
-        || has(base, "Program.cs")
-        || has(base, "Program.fs")
-        || has(base, "main.py")
-        || has(base, "index.js")
-        || has(base, "index.ts")
-        || has(base, "server.js")
-        || has(base, "Makefile")
-        || has(base, "Dockerfile")
-        || has(base, "docker-compose.yml")
-        || has(base, "docker-compose.yaml")
-        || has(base, "compose.yml")
-        || has(base, "compose.yaml")
-        || has(base, "flake.nix")
-        || has(base, "justfile")
-        || has(base, "Taskfile.yml")
-        || has(base, "Taskfile.yaml")
-}
-
 fn detect_subdirs(base: &Path) -> Vec<Service> {
     let ignore = [
         "node_modules", ".git", "target", "dist", "build",
@@ -417,12 +413,7 @@ fn detect_subdirs(base: &Path) -> Vec<Service> {
             sub_services.push(svc);
         }
 
-        if sub_services.is_empty() && has_any_project_file(&path) {
-            let mut svc = Service::new("Dev", "npm run dev");
-            svc.name = capitalize(name);
-            svc.dir = Some(name.to_string());
-            sub_services.push(svc);
-        }
+        // No fallback — if nothing detected for this subdir, it stays empty
 
         services.extend(sub_services);
     }
@@ -443,6 +434,11 @@ fn merge_services(base: Vec<Service>, extra: Vec<Service>) -> Vec<Service> {
 pub fn detect_services_for(base: &Path) -> Vec<Service> {
     let config = read_config(base);
 
+    // If config exists, it is the source of truth — skip auto-detection
+    if !config.is_empty() {
+        return config;
+    }
+
     let mut services = Vec::new();
 
     if let Some(primary) = detect_primary(base) {
@@ -457,11 +453,27 @@ pub fn detect_services_for(base: &Path) -> Vec<Service> {
     let tooling = detect_tooling(base);
     services = merge_services(services, tooling);
 
-    services = merge_services(services, config);
+    services
+}
 
-    if services.is_empty() {
-        services.push(Service::new("Dev", "npm run dev"));
+pub fn detect_services_for_init(base: &Path) -> Vec<Service> {
+    // Run full detection regardless of config, for generating rudder.toml
+    let mut services = Vec::new();
+
+    if let Some(primary) = detect_primary(base) {
+        services.push(primary);
     }
+
+    services.extend(detect_compose(base));
+
+    let subdirs = detect_subdirs(base);
+    services = merge_services(services, subdirs);
+
+    let tooling = detect_tooling(base);
+    services = merge_services(services, tooling);
+
+    let config = read_config(base);
+    services = merge_services(services, config);
 
     services
 }
