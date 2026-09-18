@@ -42,7 +42,12 @@ impl Logger {
         });
         let latest = dir.join("latest.log");
         let _ = std::fs::remove_file(&latest);
+        #[cfg(unix)]
         let _ = std::os::unix::fs::symlink(&path, &latest);
+        #[cfg(windows)]
+        let _ = std::fs::copy(&path, &latest);
+        #[cfg(not(any(unix, windows)))]
+        let _ = std::fs::copy(&path, &latest);
         Self { file, path }
     }
 
@@ -62,4 +67,3 @@ impl Logger {
         Ok(())
     }
 }
-

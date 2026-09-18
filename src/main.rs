@@ -10,6 +10,10 @@ mod ui;
 use app::App;
 use clap::{Parser, Subcommand};
 use input::Action;
+use std::io::Write;
+
+const CLI_POLL_MS: u64 = 500;
+const CLI_SHUTDOWN_WAIT_MS: u64 = 100;
 
 #[derive(Parser)]
 #[command(name = "rudder", about = "Manage development services")]
@@ -41,11 +45,15 @@ fn setup_panic_hook() {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("panic.log");
         let msg = format!(
-            "{} [panic] thread 'main' panicked at {}\n",
+            "{} [panic] thread 'main' panicked at {}\n\n",
             super_basic_time(),
             info
         );
-        let _ = std::fs::write(&path, &msg);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(msg.as_bytes()));
         eprintln!("{}", msg.trim());
     }));
 }
@@ -130,7 +138,6 @@ fn cmd_up() {
     })
     .expect("Failed to set Ctrl+C handler");
 
-    // Clear stale PIDs before starting
     service::clear_pids(&cwd);
 
     for s in &mut services {
@@ -146,20 +153,18 @@ fn cmd_up() {
         for s in &mut services {
             s.refresh();
         }
-        // Exit when all services have stopped (e.g., killed externally or crashed)
-        let any_alive = services
-            .iter()
-            .any(|s| s.status == service::Status::Running
+        let any_alive = services.iter().any(|s| {
+            s.status == service::Status::Running
                 || s.status == service::Status::Starting
-                || s.status == service::Status::Stopping);
+                || s.status == service::Status::Stopping
+        });
         if !any_alive {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(CLI_POLL_MS));
     }
 
-    // Wait for background stop to finish, then final cleanup
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(CLI_SHUTDOWN_WAIT_MS));
     for s in &mut services {
         s.refresh();
     }
@@ -196,16 +201,33 @@ fn cmd_down() {
     service::clear_pids(&cwd);
 
     if stale > 0 {
-        println!("Cleaned up {} stale PID entr{}", stale, if stale == 1 { "y" } else { "ies" });
+        println!(
+            "Cleaned up {} stale PID entr{}",
+            stale,
+            if stale == 1 { "y" } else { "ies" }
+        );
     }
     if stopped > 0 {
-        println!("Stopped {} service{}", stopped, if stopped == 1 { "" } else { "s" });
+        println!(
+            "Stopped {} service{}",
+            stopped,
+            if stopped == 1 { "" } else { "s" }
+        );
     }
 }
 
 fn cmd_services() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let services = detect::detect_services_for(&cwd);
+    let mut services = detect::detect_services_for(&cwd);
+
+    let pids = service::read_pids(&cwd);
+    for s in &mut services {
+        if let Some((_, pid)) = pids.iter().find(|(name, _)| *name == s.name) {
+            if service::process_exists(*pid) {
+                s.status = service::Status::Running;
+            }
+        }
+    }
 
     if services.is_empty() {
         println!("No services detected. Run `rudder init` to generate a config.");

@@ -2,6 +2,11 @@
 name = "rudder"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal UI and service manager for development projects"
+license = "MIT"
+repository = "https://github.com/ShadrachMoses01/rudder"
+keywords = ["tui", "dev-tools", "process-manager", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"
@@ -13,3 +18,5 @@ shlex = "1"
 which = "7"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+serde_yaml = "0.9"
+regex = "1"

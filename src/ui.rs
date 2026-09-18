@@ -54,7 +54,11 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_browser(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let focused = app.focused_pane == Pane::Browser;
 
-    let title = if focused { " Projects ▌" } else { " Projects " };
+    let title = if focused {
+        " Projects ▌"
+    } else {
+        " Projects "
+    };
     let mut block = Block::default().borders(Borders::ALL).title(title);
     if focused {
         block = block.border_style(Style::default().fg(Color::Yellow));
@@ -99,9 +103,7 @@ fn render_services(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let areas = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(area);
 
     let items: Vec<ListItem> = if app.services.is_empty() {
-        vec![ListItem::new(" No services detected.").style(
-            Style::default().fg(Color::DarkGray),
-        )]
+        vec![ListItem::new(" No services detected.").style(Style::default().fg(Color::DarkGray))]
     } else {
         app.services
             .iter()
@@ -126,7 +128,11 @@ fn render_services(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .collect()
     };
 
-    let title = if focused { " Services ▌" } else { " Services " };
+    let title = if focused {
+        " Services ▌"
+    } else {
+        " Services "
+    };
     let mut block = Block::default().borders(Borders::ALL).title(title);
     if focused {
         block = block.border_style(Style::default().fg(Color::Yellow));

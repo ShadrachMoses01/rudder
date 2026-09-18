@@ -92,7 +92,11 @@ impl FileBrowser {
         self.refresh();
 
         if let Some(ref name) = dir_name {
-            if let Some(idx) = self.entries.iter().position(|e| e.name == *name && e.is_dir) {
+            if let Some(idx) = self
+                .entries
+                .iter()
+                .position(|e| e.name == *name && e.is_dir)
+            {
                 self.selected = idx;
             }
         }
@@ -126,7 +130,9 @@ fn read_dir_entries(path: &Path) -> (Vec<FsEntry>, Option<String>) {
         Ok(r) => r,
         Err(e) => {
             let msg = match e.kind() {
-                std::io::ErrorKind::PermissionDenied => format!("Permission denied: {}", path.display()),
+                std::io::ErrorKind::PermissionDenied => {
+                    format!("Permission denied: {}", path.display())
+                }
                 std::io::ErrorKind::NotFound => format!("Path does not exist: {}", path.display()),
                 _ => format!("Failed to read directory: {} ({})", path.display(), e),
             };

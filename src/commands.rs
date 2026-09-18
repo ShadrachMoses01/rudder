@@ -1,87 +1,74 @@
 use crate::app::{App, Pane};
 
-fn do_start(app: &mut App, name: Option<&str>) {
+/// Resolve service indices from a command argument.
+/// `None` means "currently selected service".
+/// `Some("all")` means "all services".
+/// Otherwise matches by service name or ID.
+fn resolve_targets(app: &App, name: Option<&str>) -> Vec<usize> {
     match name {
-        Some("all") => {
-            app.log("[launch] Starting all services");
-            for s in &mut app.services {
-                s.start(&app.browser.current_dir);
-            }
-        }
-        Some(n) => {
-            if app.services.iter().any(|s| s.name == n) {
-                app.log(&format!("[launch] Starting service: {}", n));
-                if let Some(s) = app.services.iter_mut().find(|s| s.name == n) {
-                    s.start(&app.browser.current_dir);
-                }
-            }
-        }
+        Some("all") => (0..app.services.len()).collect(),
+        Some(n) => app
+            .services
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.name == n || s.id == n)
+            .map(|(i, _)| vec![i])
+            .unwrap_or_default(),
         None => {
-            let sname = app.services.get(app.service_selected).map(|s| s.name.clone());
-            if let Some(ref name) = sname {
-                app.log(&format!("[launch] Starting service: {}", name));
-                if let Some(s) = app.services.get_mut(app.service_selected) {
-                    s.start(&app.browser.current_dir);
-                }
+            if app.service_selected < app.services.len() {
+                vec![app.service_selected]
+            } else {
+                vec![]
             }
         }
+    }
+}
+
+fn do_start(app: &mut App, name: Option<&str>) {
+    let indices = resolve_targets(app, name);
+    if indices.is_empty() {
+        if let Some(n) = name {
+            app.log(&format!("[err] Service not found: {}", n));
+        }
+        return;
+    }
+    for &i in &indices {
+        let name = app.services[i].name.clone();
+        app.log(&format!("[launch] Starting service: {}", name));
+        app.services[i].start(&app.browser.current_dir);
     }
     app.focused_pane = Pane::Services;
 }
 
 fn do_stop(app: &mut App, name: Option<&str>) {
-    match name {
-        Some("all") => {
-            app.log("[sys] Stopping all services");
-            for s in &mut app.services {
-                s.stop_background();
-            }
+    let indices = resolve_targets(app, name);
+    if indices.is_empty() {
+        if let Some(n) = name {
+            app.log(&format!("[err] Service not found: {}", n));
         }
-        Some(n) => {
-            if app.services.iter().any(|s| s.name == n) {
-                app.log(&format!("[sys] Stopping service: {}", n));
-                if let Some(s) = app.services.iter_mut().find(|s| s.name == n) {
-                    s.stop_background();
-                }
-            }
-        }
-        None => {
-            let sname = app.services.get(app.service_selected).map(|s| s.name.clone());
-            if let Some(ref name) = sname {
-                app.log(&format!("[sys] Stopping service: {}", name));
-                if let Some(s) = app.services.get_mut(app.service_selected) {
-                    s.stop_background();
-                }
-            }
-        }
+        return;
+    }
+    for &i in &indices {
+        let name = app.services[i].name.clone();
+        app.log(&format!("[sys] Stopping service: {}", name));
+        app.services[i].stop_background();
     }
     app.focused_pane = Pane::Services;
 }
 
 fn do_restart(app: &mut App, name: Option<&str>) {
-    if name == Some("all") {
-        app.log("[sys] Restarting all services");
-        for s in &mut app.services {
-            s.stop();
-            s.start(&app.browser.current_dir);
+    let indices = resolve_targets(app, name);
+    if indices.is_empty() {
+        if let Some(n) = name {
+            app.log(&format!("[err] Service not found: {}", n));
         }
-    } else if let Some(n) = name {
-        if app.services.iter().any(|s| s.name == n) {
-            app.log(&format!("[sys] Restarting service: {}", n));
-            if let Some(s) = app.services.iter_mut().find(|s| s.name == n) {
-                s.stop();
-                s.start(&app.browser.current_dir);
-            }
-        }
-    } else {
-        let sname = app.services.get(app.service_selected).map(|s| s.name.clone());
-        if let Some(ref name) = sname {
-            app.log(&format!("[sys] Restarting service: {}", name));
-            if let Some(s) = app.services.get_mut(app.service_selected) {
-                s.stop();
-                s.start(&app.browser.current_dir);
-            }
-        }
+        return;
+    }
+    for &i in &indices {
+        let name = app.services[i].name.clone();
+        app.log(&format!("[sys] Restarting service: {}", name));
+        app.services[i].stop();
+        app.services[i].start(&app.browser.current_dir);
     }
     app.focused_pane = Pane::Services;
 }
@@ -139,7 +126,6 @@ pub fn execute(app: &mut App, input: &str) {
             match std::fs::write(&path, &out) {
                 Ok(_) => {
                     app.log(&format!("[sys] Config written to {}", path.display()));
-                    // Reload services from config
                     for s in &mut app.services {
                         s.stop();
                     }

@@ -1,3 +1,41 @@
-target/
+# Rust build output
+/target/
+**/target/
+
+# Logs
+*.log
 logs/
+
+# Rudder runtime state (PID files for `rudder up` / `rudder down`)
+.rudder/
+**/.rudder/pids/
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+__MACOSX/
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+*.rej
+.vim/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

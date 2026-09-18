@@ -2,7 +2,7 @@ use crate::browser::FileBrowser;
 use crate::commands;
 use crate::detect;
 use crate::logger::Logger;
-use crate::service::{Service, Status};
+use crate::service::{Service, ServiceId, Status};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -28,7 +28,7 @@ pub struct App {
     pub service_selected: usize,
     pub logger: Logger,
     pub log_scroll: i32,
-    service_cache: HashMap<PathBuf, HashMap<String, (Status, Vec<String>)>>,
+    service_cache: HashMap<PathBuf, HashMap<ServiceId, (Status, Vec<String>)>>,
 }
 
 impl App {
@@ -57,11 +57,15 @@ impl App {
         let key = self.browser.current_dir.clone();
         let mut map = HashMap::new();
         for s in &self.services {
+            let status = match s.status {
+                Status::Running | Status::Starting | Status::Stopping => Status::Stopped,
+                ref other => other.clone(),
+            };
             let log = match s.log.lock() {
                 Ok(g) => g.clone(),
                 Err(e) => e.into_inner().clone(),
             };
-            map.insert(s.name.clone(), (s.status.clone(), log));
+            map.insert(s.id.clone(), (status, log));
         }
         self.service_cache.insert(key, map);
     }
@@ -73,9 +77,8 @@ impl App {
             Some(cached) => fresh
                 .into_iter()
                 .map(|mut s| {
-                    if let Some((status, log)) = cached.get(&s.name) {
-                        let st = status.clone();
-                        s.status = st;
+                    if let Some((status, log)) = cached.get(&s.id) {
+                        s.status = status.clone();
                         if let Ok(mut l) = s.log.lock() {
                             *l = log.clone();
                         }
@@ -137,7 +140,10 @@ impl App {
                 Pane::Browser => {
                     self.save_current_services();
                     if self.browser.enter_selected() {
-                        self.log(&format!("[sys] Entered directory: {}", self.browser.current_dir.display()));
+                        self.log(&format!(
+                            "[sys] Entered directory: {}",
+                            self.browser.current_dir.display()
+                        ));
                         for s in &mut self.services {
                             s.stop();
                         }
@@ -146,27 +152,21 @@ impl App {
                     }
                 }
                 Pane::Services => {
-                    let action = {
-                        let s = self.services.get(self.service_selected);
-                        match s {
-                            Some(s) if s.status == Status::Running || s.status == Status::Starting => Some("stop"),
-                            Some(s) if s.status == Status::Stopping => None,
-                            Some(_) => Some("start"),
-                            None => None,
+                    if let Some(s) = self.services.get(self.service_selected) {
+                        match s.status {
+                            Status::Running | Status::Starting => {
+                                let name = s.name.clone();
+                                self.services[self.service_selected].stop_background();
+                                self.log(&format!("[sys] Stopping service: {}", name));
+                            }
+                            Status::Stopping => {}
+                            _ => {
+                                let name = s.name.clone();
+                                self.services[self.service_selected]
+                                    .start(&self.browser.current_dir);
+                                self.log(&format!("[launch] Started service: {}", name));
+                            }
                         }
-                    };
-                    match action {
-                        Some("stop") => {
-                            let name = self.services[self.service_selected].name.clone();
-                            self.services[self.service_selected].stop_background();
-                            self.log(&format!("[sys] Stopping service: {}", name));
-                        }
-                        Some("start") => {
-                            let name = self.services[self.service_selected].name.clone();
-                            self.services[self.service_selected].start(&self.browser.current_dir);
-                            self.log(&format!("[launch] Started service: {}", name));
-                        }
-                        _ => {}
                     }
                 }
             },
@@ -187,7 +187,10 @@ impl App {
         }
         self.save_current_services();
         if self.browser.go_to_parent() {
-            self.log(&format!("[sys] Moved up to: {}", self.browser.current_dir.display()));
+            self.log(&format!(
+                "[sys] Moved up to: {}",
+                self.browser.current_dir.display()
+            ));
             for s in &mut self.services {
                 s.stop();
             }
@@ -222,6 +225,8 @@ impl App {
             self.browser.change_dir(&target);
             self.restore_services();
             self.service_selected = 0;
+        } else {
+            self.log(&format!("[err] Invalid directory: {}", target.display()));
         }
     }
 
@@ -249,8 +254,23 @@ impl App {
 
     pub fn open_log(&self) {
         let path = crate::logger::Logger::latest_log_path();
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        let _ = std::process::Command::new(opener)
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open")
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = std::process::Command::new("xdg-open")
             .arg(&path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -264,9 +284,8 @@ impl App {
             Some(cached) => fresh
                 .into_iter()
                 .map(|mut s| {
-                    if let Some((status, log)) = cached.get(&s.name) {
-                        let st = status.clone();
-                        s.status = st;
+                    if let Some((status, log)) = cached.get(&s.id) {
+                        s.status = status.clone();
                         if let Ok(mut l) = s.log.lock() {
                             *l = log.clone();
                         }
@@ -292,7 +311,7 @@ impl App {
                 Status::Running => self.log(&format!("[sys] Running: {}", name)),
                 Status::Stopped => self.log(&format!("[sys] Stopped: {}", name)),
                 Status::Failed(e) => self.log(&format!("[err] {} exited ({})", name, e)),
-                Status::Starting => {},
+                Status::Starting => {}
                 Status::Stopping => self.log(&format!("[sys] Stopping: {}", name)),
             }
         }

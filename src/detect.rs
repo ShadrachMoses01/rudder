@@ -64,9 +64,7 @@ fn detect_primary(base: &Path) -> Option<Service> {
             };
             let pm = package_manager(base);
             let has_script = |name: &str| -> bool {
-                pkg.scripts
-                    .as_ref()
-                    .map_or(false, |s| s.contains_key(name))
+                pkg.scripts.as_ref().map_or(false, |s| s.contains_key(name))
             };
 
             if has_script("dev") || has_script("develop") {
@@ -113,7 +111,10 @@ fn detect_primary(base: &Path) -> Option<Service> {
     }
 
     if has(base, "manage.py") {
-        return Some(Service::new("Dev", &format!("{} manage.py runserver", python_cmd())));
+        return Some(Service::new(
+            "Dev",
+            &format!("{} manage.py runserver", python_cmd()),
+        ));
     }
 
     if has(base, "pyproject.toml") {
@@ -195,6 +196,11 @@ fn compose_cmd() -> &'static str {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ComposeFile {
+    services: Option<HashMap<String, serde_yaml::Value>>,
+}
+
 fn detect_compose(base: &Path) -> Vec<Service> {
     let content = read_to_string(base, "docker-compose.yml")
         .or_else(|| read_to_string(base, "docker-compose.yaml"))
@@ -203,6 +209,16 @@ fn detect_compose(base: &Path) -> Vec<Service> {
 
     let content = match content {
         Some(c) => c,
+        None => return vec![],
+    };
+
+    let compose: ComposeFile = match serde_yaml::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let services_map = match compose.services {
+        Some(s) => s,
         None => return vec![],
     };
 
@@ -252,26 +268,11 @@ fn detect_compose(base: &Path) -> Vec<Service> {
     ];
 
     let mut services = Vec::new();
-    let mut in_services = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !in_services {
-            if trimmed == "services:" {
-                in_services = true;
-            }
-            continue;
-        }
-        if !line.starts_with("  ") || trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.ends_with(':') {
-            let name = trimmed.trim_end_matches(':');
-            if let Some(&(_, display, suffix)) = known.iter().find(|(key, _, _)| *key == name) {
-                if !services.iter().any(|s: &Service| s.name == display) {
-                    let cmd = format!("{}{}", prefix, suffix);
-                    services.push(Service::new(display, &cmd));
-                }
+    for (key, display, suffix) in known {
+        if services_map.contains_key(*key) {
+            if !services.iter().any(|s: &Service| s.name == *display) {
+                let cmd = format!("{}{}", prefix, suffix);
+                services.push(Service::new(display, &cmd));
             }
         }
     }
@@ -319,8 +320,8 @@ fn capitalize(s: &str) -> String {
 }
 
 fn read_config(base: &Path) -> Vec<Service> {
-    let content = read_to_string(base, "rudder.toml")
-        .or_else(|| read_to_string(base, ".rudder.toml"));
+    let content =
+        read_to_string(base, "rudder.toml").or_else(|| read_to_string(base, ".rudder.toml"));
 
     let content = match content {
         Some(c) => c,
@@ -367,8 +368,16 @@ fn read_config(base: &Path) -> Vec<Service> {
 
 fn detect_subdirs(base: &Path) -> Vec<Service> {
     let ignore = [
-        "node_modules", ".git", "target", "dist", "build",
-        ".next", ".svelte-kit", ".cache", "vendor", "__pycache__",
+        "node_modules",
+        ".git",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".svelte-kit",
+        ".cache",
+        "vendor",
+        "__pycache__",
     ];
 
     let mut services = Vec::new();
@@ -400,20 +409,21 @@ fn detect_subdirs(base: &Path) -> Vec<Service> {
         if let Some(mut svc) = detect_primary(&path) {
             svc.name = capitalize(name);
             svc.dir = Some(name.to_string());
+            svc.update_id();
             sub_services.push(svc);
         }
 
         for mut svc in detect_compose(&path) {
             svc.dir = Some(name.to_string());
+            svc.update_id();
             sub_services.push(svc);
         }
 
         for mut svc in detect_tooling(&path) {
             svc.dir = Some(name.to_string());
+            svc.update_id();
             sub_services.push(svc);
         }
-
-        // No fallback — if nothing detected for this subdir, it stays empty
 
         services.extend(sub_services);
     }
@@ -424,7 +434,7 @@ fn detect_subdirs(base: &Path) -> Vec<Service> {
 fn merge_services(base: Vec<Service>, extra: Vec<Service>) -> Vec<Service> {
     let mut result = base;
     for e in extra {
-        if !result.iter().any(|s| s.name == e.name) {
+        if !result.iter().any(|s| s.id == e.id) {
             result.push(e);
         }
     }
@@ -434,7 +444,6 @@ fn merge_services(base: Vec<Service>, extra: Vec<Service>) -> Vec<Service> {
 pub fn detect_services_for(base: &Path) -> Vec<Service> {
     let config = read_config(base);
 
-    // If config exists, it is the source of truth — skip auto-detection
     if !config.is_empty() {
         return config;
     }
@@ -457,7 +466,6 @@ pub fn detect_services_for(base: &Path) -> Vec<Service> {
 }
 
 pub fn detect_services_for_init(base: &Path) -> Vec<Service> {
-    // Run full detection regardless of config, for generating rudder.toml
     let mut services = Vec::new();
 
     if let Some(primary) = detect_primary(base) {
